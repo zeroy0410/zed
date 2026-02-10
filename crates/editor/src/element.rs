@@ -47,7 +47,7 @@ use gpui::{
     MouseDownEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent, PaintQuad, ParentElement,
     Pixels, PressureStage, ScrollDelta, ScrollHandle, ScrollWheelEvent, ShapedLine, SharedString,
     Size, StatefulInteractiveElement, Style, Styled, StyledText, TextAlign, TextRun,
-    TextStyleRefinement, WeakEntity, Window, anchored, checkerboard, deferred, div, fill,
+    TextStyleRefinement, TouchPhase, WeakEntity, Window, anchored, checkerboard, deferred, div, fill,
     linear_color_stop, linear_gradient, outline, point, px, quad, relative, size, solid_background,
     transparent_black,
 };
@@ -86,7 +86,7 @@ use std::{
 };
 use sum_tree::Bias;
 use text::{BufferId, SelectionGoal};
-use theme::{ActiveTheme, Appearance, BufferLineHeight, PlayerColor};
+use theme::{ActiveTheme, Appearance, BufferLineHeight, PlayerColor, ThemeSettings};
 use ui::utils::ensure_minimum_contrast;
 use ui::{
     ButtonLike, ContextMenu, Indicator, KeyBinding, POPOVER_Y_PADDING, Tooltip, prelude::*,
@@ -7490,6 +7490,10 @@ impl EditorElement {
             let editor = self.editor.clone();
             let hitbox = layout.hitbox.clone();
             let mut delta = ScrollDelta::default();
+            let mut previous_zoom_wheel_time: Option<Instant> = None;
+            let mut zoom_gesture_start_font_size: Option<Pixels> = None;
+            let mut zoom_gesture_accumulated_delta = 0.0f32;
+            let mut zoom_gesture_last_font_size: Option<Pixels> = None;
 
             // Set a minimum scroll_sensitivity of 0.01 to make sure the user doesn't
             // accidentally turn off their scrolling.
@@ -7502,32 +7506,145 @@ impl EditorElement {
                 .max(0.01);
 
             move |event: &ScrollWheelEvent, phase, window, cx| {
-                let scroll_sensitivity = {
-                    if event.modifiers.alt {
-                        fast_scroll_sensitivity
-                    } else {
-                        base_scroll_sensitivity
-                    }
+                let ctrl_scroll_to_zoom = cfg!(target_os = "macos")
+                    && EditorSettings::get_global(cx).ctrl_scroll_to_zoom
+                    && event.modifiers.control;
+                let ctrl_scroll_to_zoom_sensitivity = EditorSettings::get_global(cx)
+                    .ctrl_scroll_to_zoom_sensitivity
+                    .max(0.01);
+
+                let scroll_sensitivity = if event.modifiers.alt {
+                    fast_scroll_sensitivity
+                } else {
+                    base_scroll_sensitivity
                 };
 
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
-                    delta = delta.coalesce(event.delta);
+                    if ctrl_scroll_to_zoom {
+                        delta = ScrollDelta::default();
+                    } else {
+                        delta = delta.coalesce(event.delta);
+                    }
+
                     editor.update(cx, |editor, cx| {
                         let position_map: &PositionMap = &position_map;
-
                         let line_height = position_map.line_height;
+
+                        if ctrl_scroll_to_zoom && editor.mode.is_full() {
+                            match event.delta {
+                                ScrollDelta::Lines(lines) => {
+                                    if lines.y > 0.0 {
+                                        window.dispatch_action(
+                                            zed_actions::IncreaseBufferFontSize { persist: true }
+                                                .boxed_clone(),
+                                            cx,
+                                        );
+                                    } else if lines.y < 0.0 {
+                                        window.dispatch_action(
+                                            zed_actions::DecreaseBufferFontSize { persist: true }
+                                                .boxed_clone(),
+                                            cx,
+                                        );
+                                    }
+                                }
+                                ScrollDelta::Pixels(pixels) => {
+                                    let now = Instant::now();
+                                    let gesture_timed_out = previous_zoom_wheel_time
+                                        .map(|previous| {
+                                            now.duration_since(previous) > Duration::from_millis(50)
+                                        })
+                                        .unwrap_or(true);
+
+                                    if gesture_timed_out {
+                                        if let Some(last_font_size) = zoom_gesture_last_font_size.take() {
+                                            window.dispatch_action(
+                                                zed_actions::SetBufferFontSize {
+                                                    font_size: f32::from(last_font_size),
+                                                    persist: true,
+                                                }
+                                                .boxed_clone(),
+                                                cx,
+                                            );
+                                        }
+
+                                        zoom_gesture_start_font_size =
+                                            Some(ThemeSettings::get_global(cx).buffer_font_size(cx));
+                                        zoom_gesture_accumulated_delta = 0.0;
+                                    }
+
+                                    previous_zoom_wheel_time = Some(now);
+
+                                    let gesture_start_font_size = if let Some(font_size) = zoom_gesture_start_font_size {
+                                        font_size
+                                    } else {
+                                        let font_size = ThemeSettings::get_global(cx).buffer_font_size(cx);
+                                        zoom_gesture_start_font_size = Some(font_size);
+                                        font_size
+                                    };
+
+                                    zoom_gesture_accumulated_delta +=
+                                        f32::from(pixels.y) * ctrl_scroll_to_zoom_sensitivity;
+
+                                    let target_font_size = theme::clamp_font_size(
+                                        gesture_start_font_size
+                                            + px(zoom_gesture_accumulated_delta / 5.0),
+                                    );
+                                    zoom_gesture_last_font_size = Some(target_font_size);
+
+                                    window.dispatch_action(
+                                        zed_actions::SetBufferFontSize {
+                                            font_size: f32::from(target_font_size),
+                                            persist: false,
+                                        }
+                                        .boxed_clone(),
+                                        cx,
+                                    );
+
+                                    if matches!(event.touch_phase, TouchPhase::Ended) {
+                                        window.dispatch_action(
+                                            zed_actions::SetBufferFontSize {
+                                                font_size: f32::from(target_font_size),
+                                                persist: true,
+                                            }
+                                            .boxed_clone(),
+                                            cx,
+                                        );
+                                        zoom_gesture_start_font_size = None;
+                                        zoom_gesture_accumulated_delta = 0.0;
+                                        zoom_gesture_last_font_size = None;
+                                        previous_zoom_wheel_time = None;
+                                    }
+                                }
+                            }
+
+                            cx.stop_propagation();
+                            return;
+                        }
+
+                        if let Some(last_font_size) = zoom_gesture_last_font_size.take() {
+                            window.dispatch_action(
+                                zed_actions::SetBufferFontSize {
+                                    font_size: f32::from(last_font_size),
+                                    persist: true,
+                                }
+                                .boxed_clone(),
+                                cx,
+                            );
+                            zoom_gesture_start_font_size = None;
+                            zoom_gesture_accumulated_delta = 0.0;
+                            previous_zoom_wheel_time = None;
+                        }
+
                         let max_glyph_advance = position_map.em_advance;
                         let (delta, axis) = match delta {
-                            gpui::ScrollDelta::Pixels(mut pixels) => {
-                                //Trackpad
+                            ScrollDelta::Pixels(mut pixels) => {
+                                // Trackpad
                                 let axis = position_map.snapshot.ongoing_scroll.filter(&mut pixels);
                                 (pixels, axis)
                             }
-
-                            gpui::ScrollDelta::Lines(lines) => {
-                                //Not trackpad
-                                let pixels =
-                                    point(lines.x * max_glyph_advance, lines.y * line_height);
+                            ScrollDelta::Lines(lines) => {
+                                // Not trackpad
+                                let pixels = point(lines.x * max_glyph_advance, lines.y * line_height);
                                 (pixels, None)
                             }
                         };

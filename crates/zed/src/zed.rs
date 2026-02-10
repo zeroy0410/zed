@@ -990,6 +990,26 @@ fn register_actions(
         })
         .register_action({
             let fs = app_state.fs.clone();
+            move |_, action: &zed_actions::SetBufferFontSize, _window, cx| {
+                let current_font_size = ThemeSettings::get_global(cx).buffer_font_size(cx);
+                let target_font_size = if action.font_size.is_finite() {
+                    theme::clamp_font_size(px(action.font_size))
+                } else {
+                    current_font_size
+                };
+
+                if action.persist {
+                    let persisted_font_size = f32::from(target_font_size);
+                    update_settings_file(fs.clone(), cx, move |settings, _| {
+                        settings.theme.buffer_font_size = Some(persisted_font_size.into());
+                    });
+                } else {
+                    theme::adjust_buffer_font_size(cx, |_| target_font_size);
+                }
+            }
+        })
+        .register_action({
+            let fs = app_state.fs.clone();
             move |_, action: &zed_actions::DecreaseBufferFontSize, _window, cx| {
                 if action.persist {
                     update_settings_file(fs.clone(), cx, move |settings, cx| {

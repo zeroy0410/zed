@@ -255,6 +255,8 @@ impl VsCodeSettings {
                 _ => None,
             }),
             diagnostics_max_severity: None,
+            ctrl_scroll_to_zoom: None,
+            ctrl_scroll_to_zoom_sensitivity: None,
             double_click_in_multibuffer: None,
             drag_and_drop_selection: None,
             excerpt_context_lines: None,

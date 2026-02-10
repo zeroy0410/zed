@@ -634,6 +634,15 @@
   // to both the horizontal and vertical delta values while scrolling. Fast scrolling
   // happens when a user holds the alt or option key while scrolling.
   "fast_scroll_sensitivity": 4.0,
+  // Whether pressing Ctrl while using the mouse wheel adjusts the editor font size.
+  //
+  // This currently applies on macOS only and only for full-size editors.
+  "ctrl_scroll_to_zoom": false,
+  // Sensitivity multiplier used for Ctrl + mouse wheel zooming in full-size editors.
+  //
+  // This currently applies on macOS only and affects pixel-based scroll input
+  // (such as trackpads). Larger values make zooming respond faster.
+  "ctrl_scroll_to_zoom_sensitivity": 1.0,
   "sticky_scroll": {
     // Whether to stick scopes to the top of the editor.
     "enabled": false,

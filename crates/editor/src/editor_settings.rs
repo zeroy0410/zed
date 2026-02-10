@@ -34,6 +34,8 @@ pub struct EditorSettings {
     pub horizontal_scroll_margin: f32,
     pub scroll_sensitivity: f32,
     pub fast_scroll_sensitivity: f32,
+    pub ctrl_scroll_to_zoom: bool,
+    pub ctrl_scroll_to_zoom_sensitivity: f32,
     pub sticky_scroll: StickyScroll,
     pub relative_line_numbers: RelativeLineNumbers,
     pub seed_search_query_from_cursor: SeedQuerySetting,
@@ -251,6 +253,8 @@ impl Settings for EditorSettings {
             horizontal_scroll_margin: editor.horizontal_scroll_margin.unwrap(),
             scroll_sensitivity: editor.scroll_sensitivity.unwrap(),
             fast_scroll_sensitivity: editor.fast_scroll_sensitivity.unwrap(),
+            ctrl_scroll_to_zoom: editor.ctrl_scroll_to_zoom.unwrap(),
+            ctrl_scroll_to_zoom_sensitivity: editor.ctrl_scroll_to_zoom_sensitivity.unwrap(),
             sticky_scroll: StickyScroll {
                 enabled: sticky_scroll.enabled.unwrap(),
             },

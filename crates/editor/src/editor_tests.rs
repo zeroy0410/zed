@@ -52,7 +52,9 @@ use settings::{
     IndentGuideBackgroundColoring, IndentGuideColoring, InlayHintSettingsContent,
     ProjectSettingsContent, SearchSettingsContent, SettingsStore,
 };
-use std::{cell::RefCell, future::Future, rc::Rc, sync::atomic::AtomicBool, time::Instant};
+use std::{
+    cell::Cell, cell::RefCell, future::Future, rc::Rc, sync::atomic::AtomicBool, time::Instant,
+};
 use std::{
     iter,
     sync::atomic::{self, AtomicUsize},
@@ -2485,6 +2487,396 @@ async fn test_autoscroll(cx: &mut TestAppContext) {
             gpui::Point::new(0., 1.0)
         );
     });
+}
+
+#[cfg(target_os = "macos")]
+fn register_buffer_font_zoom_actions(
+    cx: &mut EditorTestContext,
+    increase_count: Rc<Cell<usize>>,
+    decrease_count: Rc<Cell<usize>>,
+    set_count: Rc<Cell<usize>>,
+) {
+    cx.update(|_, cx| {
+        cx.on_action({
+            let increase_count = increase_count.clone();
+            move |_: &zed_actions::IncreaseBufferFontSize, cx| {
+                increase_count.set(increase_count.get() + 1);
+                theme::adjust_buffer_font_size(cx, |size| size + px(1.0));
+            }
+        });
+        cx.on_action({
+            let decrease_count = decrease_count.clone();
+            move |_: &zed_actions::DecreaseBufferFontSize, cx| {
+                decrease_count.set(decrease_count.get() + 1);
+                theme::adjust_buffer_font_size(cx, |size| size - px(1.0));
+            }
+        });
+        cx.on_action({
+            let set_count = set_count.clone();
+            move |action: &zed_actions::SetBufferFontSize, cx| {
+                set_count.set(set_count.get() + 1);
+                let current_font_size = ThemeSettings::get_global(cx).buffer_font_size(cx);
+                let target_font_size = if action.font_size.is_finite() {
+                    theme::clamp_font_size(px(action.font_size))
+                } else {
+                    current_font_size
+                };
+                theme::adjust_buffer_font_size(cx, |_| target_font_size);
+            }
+        });
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn simulate_ctrl_scroll_with_phase(
+    cx: &mut EditorTestContext,
+    position: gpui::Point<gpui::Pixels>,
+    delta: gpui::ScrollDelta,
+    touch_phase: gpui::TouchPhase,
+) {
+    cx.simulate_event(gpui::ScrollWheelEvent {
+        position,
+        delta,
+        touch_phase,
+        modifiers: gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn simulate_ctrl_scroll(
+    cx: &mut EditorTestContext,
+    position: gpui::Point<gpui::Pixels>,
+    delta: gpui::ScrollDelta,
+) {
+    simulate_ctrl_scroll_with_phase(cx, position, delta, gpui::TouchPhase::Moved);
+}
+
+#[cfg(target_os = "macos")]
+fn buffer_font_size(cx: &mut EditorTestContext) -> gpui::Pixels {
+    cx.update_editor(|_, _, cx| ThemeSettings::get_global(cx).buffer_font_size(cx))
+}
+
+#[cfg(target_os = "macos")]
+fn assert_buffer_font_size_delta(
+    before_font_size: gpui::Pixels,
+    expected_delta: f32,
+    tolerance: f32,
+    cx: &mut EditorTestContext,
+) {
+    let after_font_size = buffer_font_size(cx);
+    let actual_delta = f32::from(after_font_size) - f32::from(before_font_size);
+    assert!(
+        (actual_delta - expected_delta).abs() <= tolerance,
+        "expected delta {}±{}, got {}",
+        expected_delta,
+        tolerance,
+        actual_delta,
+    );
+}
+
+#[cfg(target_os = "macos")]
+fn enable_ctrl_scroll_to_zoom(settings: &mut EditorSettingsContent, sensitivity: f32) {
+    settings.ctrl_scroll_to_zoom = Some(true);
+    settings.ctrl_scroll_to_zoom_sensitivity = Some(sensitivity);
+}
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+async fn test_ctrl_scroll_to_zoom_disabled_keeps_scrolling(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let mut cx = EditorTestContext::new(cx).await;
+    update_test_editor_settings(&mut cx, |settings| {
+        settings.ctrl_scroll_to_zoom = Some(false);
+        settings.ctrl_scroll_to_zoom_sensitivity = Some(1.0);
+    });
+
+    let line_height = cx.update_editor(|editor, window, cx| {
+        editor
+            .style(cx)
+            .text
+            .line_height_in_pixels(window.rem_size())
+    });
+    cx.simulate_window_resize(cx.window, size(px(1000.), 4. * line_height + px(0.5)));
+
+    cx.set_state(
+        r#"ˇone
+two
+three
+four
+five
+six
+seven
+eight
+nine
+ten
+"#,
+    );
+
+    let position = cx.pixel_position_for(DisplayPoint::new(DisplayRow(0), 0));
+    let before_scroll = cx.update_editor(|editor, _, cx| editor.scroll_position(cx));
+
+    simulate_ctrl_scroll(
+        &mut cx,
+        position,
+        gpui::ScrollDelta::Lines(gpui::point(0.0, -2.0)),
+    );
+
+    let after_scroll = cx.update_editor(|editor, _, cx| editor.scroll_position(cx));
+    assert!(after_scroll.y > before_scroll.y);
+}
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+async fn test_ctrl_scroll_to_zoom_enabled_line_delta_zoom_and_stops_scroll(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let mut cx = EditorTestContext::new(cx).await;
+    update_test_editor_settings(&mut cx, |settings| {
+        enable_ctrl_scroll_to_zoom(settings, 1.0);
+    });
+
+    let increase_count = Rc::new(Cell::new(0usize));
+    let decrease_count = Rc::new(Cell::new(0usize));
+    let set_count = Rc::new(Cell::new(0usize));
+    register_buffer_font_zoom_actions(
+        &mut cx,
+        increase_count.clone(),
+        decrease_count.clone(),
+        set_count.clone(),
+    );
+
+    let line_height = cx.update_editor(|editor, window, cx| {
+        editor
+            .style(cx)
+            .text
+            .line_height_in_pixels(window.rem_size())
+    });
+    cx.simulate_window_resize(cx.window, size(px(1000.), 4. * line_height + px(0.5)));
+
+    cx.set_state(
+        r#"ˇone
+two
+three
+four
+five
+six
+seven
+eight
+nine
+ten
+"#,
+    );
+
+    let position = cx.pixel_position_for(DisplayPoint::new(DisplayRow(0), 0));
+    let before_scroll = cx.update_editor(|editor, _, cx| editor.scroll_position(cx));
+    let before_font_size = buffer_font_size(&mut cx);
+
+    simulate_ctrl_scroll(
+        &mut cx,
+        position,
+        gpui::ScrollDelta::Lines(gpui::point(0.0, 1.0)),
+    );
+
+    let after_scroll = cx.update_editor(|editor, _, cx| editor.scroll_position(cx));
+    assert_eq!(after_scroll, before_scroll);
+    assert_buffer_font_size_delta(before_font_size, 1.0, 0.001, &mut cx);
+    assert_eq!(increase_count.get(), 1);
+    assert_eq!(decrease_count.get(), 0);
+    assert_eq!(set_count.get(), 0);
+
+    let before_font_size = buffer_font_size(&mut cx);
+    simulate_ctrl_scroll(
+        &mut cx,
+        position,
+        gpui::ScrollDelta::Lines(gpui::point(0.0, -1.0)),
+    );
+
+    assert_buffer_font_size_delta(before_font_size, -1.0, 0.001, &mut cx);
+    assert_eq!(increase_count.get(), 1);
+    assert_eq!(decrease_count.get(), 1);
+    assert_eq!(set_count.get(), 0);
+}
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+async fn test_ctrl_scroll_to_zoom_enabled_pixel_delta_is_continuous(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let mut cx = EditorTestContext::new(cx).await;
+    update_test_editor_settings(&mut cx, |settings| {
+        enable_ctrl_scroll_to_zoom(settings, 1.0);
+    });
+
+    let increase_count = Rc::new(Cell::new(0usize));
+    let decrease_count = Rc::new(Cell::new(0usize));
+    let set_count = Rc::new(Cell::new(0usize));
+    register_buffer_font_zoom_actions(
+        &mut cx,
+        increase_count.clone(),
+        decrease_count.clone(),
+        set_count.clone(),
+    );
+
+    cx.set_state(
+        r#"ˇone
+two
+three
+four
+five
+"#,
+    );
+
+    let position = cx.pixel_position_for(DisplayPoint::new(DisplayRow(0), 0));
+
+    let before_font_size = buffer_font_size(&mut cx);
+    simulate_ctrl_scroll(
+        &mut cx,
+        position,
+        gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(2.5))),
+    );
+    assert_buffer_font_size_delta(before_font_size, 0.5, 0.05, &mut cx);
+
+    let before_font_size = buffer_font_size(&mut cx);
+    simulate_ctrl_scroll_with_phase(
+        &mut cx,
+        position,
+        gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(2.5))),
+        gpui::TouchPhase::Ended,
+    );
+    assert_buffer_font_size_delta(before_font_size, 0.5, 0.05, &mut cx);
+
+    assert_eq!(increase_count.get(), 0);
+    assert_eq!(decrease_count.get(), 0);
+    assert!(set_count.get() >= 3);
+}
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+async fn test_ctrl_scroll_to_zoom_sensitivity_is_configurable(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    let mut cx = EditorTestContext::new(cx).await;
+    update_test_editor_settings(&mut cx, |settings| {
+        enable_ctrl_scroll_to_zoom(settings, 0.5);
+    });
+
+    let increase_count = Rc::new(Cell::new(0usize));
+    let decrease_count = Rc::new(Cell::new(0usize));
+    let set_count = Rc::new(Cell::new(0usize));
+    register_buffer_font_zoom_actions(
+        &mut cx,
+        increase_count.clone(),
+        decrease_count.clone(),
+        set_count.clone(),
+    );
+
+    cx.set_state(
+        r#"ˇone
+two
+three
+"#,
+    );
+
+    let position = cx.pixel_position_for(DisplayPoint::new(DisplayRow(0), 0));
+
+    let before_font_size = buffer_font_size(&mut cx);
+    simulate_ctrl_scroll_with_phase(
+        &mut cx,
+        position,
+        gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(5.0))),
+        gpui::TouchPhase::Ended,
+    );
+    let after_low_sensitivity = buffer_font_size(&mut cx);
+    let low_sensitivity_delta = f32::from(after_low_sensitivity) - f32::from(before_font_size);
+
+    update_test_editor_settings(&mut cx, |settings| {
+        enable_ctrl_scroll_to_zoom(settings, 1.0);
+    });
+
+    let before_font_size = buffer_font_size(&mut cx);
+    simulate_ctrl_scroll_with_phase(
+        &mut cx,
+        position,
+        gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(5.0))),
+        gpui::TouchPhase::Ended,
+    );
+    let after_high_sensitivity = buffer_font_size(&mut cx);
+    let high_sensitivity_delta = f32::from(after_high_sensitivity) - f32::from(before_font_size);
+
+    assert!(high_sensitivity_delta > low_sensitivity_delta + 0.3);
+    assert_eq!(increase_count.get(), 0);
+    assert_eq!(decrease_count.get(), 0);
+    assert!(set_count.get() >= 4);
+}
+
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn test_ctrl_scroll_to_zoom_only_works_in_full_mode(cx: &mut TestAppContext) {
+    init_test(cx, |_| {});
+    update_test_editor_settings(cx, |settings| {
+        enable_ctrl_scroll_to_zoom(settings, 1.0);
+    });
+
+    let increase_count = Rc::new(Cell::new(0usize));
+    let decrease_count = Rc::new(Cell::new(0usize));
+    let set_count = Rc::new(Cell::new(0usize));
+    cx.update(|cx| {
+        cx.on_action({
+            let increase_count = increase_count.clone();
+            move |_: &zed_actions::IncreaseBufferFontSize, _| {
+                increase_count.set(increase_count.get() + 1);
+            }
+        });
+        cx.on_action({
+            let decrease_count = decrease_count.clone();
+            move |_: &zed_actions::DecreaseBufferFontSize, _| {
+                decrease_count.set(decrease_count.get() + 1);
+            }
+        });
+        cx.on_action({
+            let set_count = set_count.clone();
+            move |_: &zed_actions::SetBufferFontSize, _| {
+                set_count.set(set_count.get() + 1);
+            }
+        });
+    });
+
+    let single_line_editor = cx.add_window(|window, cx| {
+        let editor = Editor::single_line(window, cx);
+        window.focus(&editor.focus_handle(cx), cx);
+        editor
+    });
+    let mut single_line_cx = VisualTestContext::from_window(*single_line_editor.deref(), cx);
+    single_line_cx.simulate_event(gpui::ScrollWheelEvent {
+        position: gpui::point(px(5.0), px(5.0)),
+        delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -2.0)),
+        modifiers: gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let auto_height_editor = cx.add_window(|window, cx| {
+        let editor = Editor::auto_height(1, 3, window, cx);
+        window.focus(&editor.focus_handle(cx), cx);
+        editor
+    });
+    let mut auto_height_cx = VisualTestContext::from_window(*auto_height_editor.deref(), cx);
+    auto_height_cx.simulate_event(gpui::ScrollWheelEvent {
+        position: gpui::point(px(5.0), px(5.0)),
+        delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -2.0)),
+        modifiers: gpui::Modifiers {
+            control: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    assert_eq!(increase_count.get(), 0);
+    assert_eq!(decrease_count.get(), 0);
+    assert_eq!(set_count.get(), 0);
 }
 
 #[gpui::test]

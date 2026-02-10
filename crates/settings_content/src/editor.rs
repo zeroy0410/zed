@@ -96,6 +96,20 @@ pub struct EditorSettingsContent {
     /// Default: 4.0
     #[serde(serialize_with = "crate::serialize_optional_f32_with_two_decimal_places")]
     pub fast_scroll_sensitivity: Option<f32>,
+    /// Whether pressing Ctrl while using the mouse wheel adjusts the editor font size.
+    ///
+    /// This currently applies on macOS only and only for full-size editors.
+    ///
+    /// Default: false
+    pub ctrl_scroll_to_zoom: Option<bool>,
+    /// Sensitivity multiplier used for Ctrl + mouse wheel zooming in full-size editors.
+    ///
+    /// This currently applies on macOS only and affects pixel-based scroll input
+    /// (such as trackpads). Larger values make zooming respond faster.
+    ///
+    /// Default: 1.0
+    #[serde(serialize_with = "crate::serialize_optional_f32_with_two_decimal_places")]
+    pub ctrl_scroll_to_zoom_sensitivity: Option<f32>,
     /// Settings for sticking scopes to the top of the editor.
     ///
     /// Default: sticky scroll is disabled

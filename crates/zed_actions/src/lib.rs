@@ -128,6 +128,16 @@ pub struct IncreaseBufferFontSize {
     pub persist: bool,
 }
 
+/// Sets the font size in the editor buffer to an absolute value.
+#[derive(PartialEq, Clone, Debug, Deserialize, JsonSchema, Action)]
+#[action(namespace = zed)]
+#[serde(deny_unknown_fields)]
+pub struct SetBufferFontSize {
+    pub font_size: f32,
+    #[serde(default)]
+    pub persist: bool,
+}
+
 /// Opens the settings editor at a specific path.
 #[derive(PartialEq, Clone, Debug, Deserialize, JsonSchema, Action)]
 #[action(namespace = zed)]
